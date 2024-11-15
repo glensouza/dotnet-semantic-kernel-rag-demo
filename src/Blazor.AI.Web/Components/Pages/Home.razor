@@ -1,7 +1,14 @@
 ﻿@page "/"
 @rendermode InteractiveServer
 
+@using Azure
+@using Azure.Search.Documents.Indexes
+@using Blazor.AI.Web.Plugins
 @using Markdig
+@using Microsoft.SemanticKernel;
+@using Microsoft.SemanticKernel.ChatCompletion;
+@using Microsoft.SemanticKernel.Connectors.OpenAI;
+@using Microsoft.SemanticKernel.Plugins.OpenApi;
 
 <PageTitle>Dotnet RAG Chat</PageTitle>
 
@@ -67,13 +74,24 @@
 <FluentKeyCodeProvider />
 
 @code {
+#pragma warning disable SKEXP0040 // Type is for evaluation purposes only and is subject to change or removal in future updates. Suppress this diagnostic to proceed.
+#pragma warning disable SKEXP0020 // Type is for evaluation purposes only and is subject to change or removal in future updates. Suppress this diagnostic to proceed.
+#pragma warning disable SKEXP0010 // Type is for evaluation purposes only and is subject to change or removal in future updates. Suppress this diagnostic to proceed.
+#pragma warning disable SKEXP0001 // Type is for evaluation purposes only and is subject to change or removal in future updates. Suppress this diagnostic to proceed.
+
     [Inject]
     private IKeyCodeService KeyCodeService { get; set; }
 
+    [Inject]
+    private IConfiguration Configuration { get; set; }
+
+    private Kernel? kernel;
+    private IChatCompletionService? chatCompletionService;
+    private OpenAIPromptExecutionSettings? openAIPromptExecutionSettings;
+    private readonly ChatHistory chatHistory = [];
     private string? MessageInput { get; set; }
     private bool loading = false;
     private const bool DisplayToolMessages = false;
-    private readonly ChatHistory chatHistory = [];
     private FluentButton submitButton = new();
     private FluentTextArea inputTextArea = new();
     private readonly MarkdownPipeline pipeline = new MarkdownPipelineBuilder()
@@ -84,6 +102,47 @@
 
     protected override async Task OnInitializedAsync()
     {
+        // Configure Semantic Kernel
+        IKernelBuilder kernelBuilder = Kernel.CreateBuilder();
+
+        // Add OpenAI Chat Completion
+        kernelBuilder.AddAzureOpenAIChatCompletion(
+            this.Configuration["AOI_DEPLOYMODEL"] ?? "gpt-35-turbo", 
+            this.Configuration["AOI_ENDPOINT"]!, 
+            this.Configuration["AOI_API_KEY"]!);
+
+        // Register Azure OpenAI Text Embeddings Generation
+        kernelBuilder.Services.AddAzureOpenAITextEmbeddingGeneration(
+            this.Configuration["EMBEDDINGS_DEPLOYMODEL"]!, 
+            this.Configuration["AOI_ENDPOINT"]!, 
+            this.Configuration["AOI_API_KEY"]!);
+
+        // Register Search Index
+        kernelBuilder.Services.AddSingleton(
+            _ => new SearchIndexClient(
+                new Uri(this.Configuration["AI_SEARCH_URL"]!),
+                new AzureKeyCredential(this.Configuration["AI_SEARCH_KEY"]!)));
+
+        // Register Azure AI Search Vector Store
+        kernelBuilder.AddAzureAISearchVectorStore();
+
+        // Finalize Kernel Builder
+        this.kernel = kernelBuilder.Build();
+
+        // Add Search Plugin
+        this.kernel.Plugins.AddFromType<SearchPlugin>("SearchPlugin", this.kernel.Services);
+
+        // Challenge 02 - Chat Completion Service
+        this.chatCompletionService = this.kernel.Services.GetRequiredService<IChatCompletionService>();
+
+        // Challenge 03 - Create OpenAIPromptExecutionSettings
+        this.openAIPromptExecutionSettings = new OpenAIPromptExecutionSettings
+        {
+            ChatSystemPrompt = "You're a virtual assistant that helps people find information. Ask followup questions if something is unclear or more data is needed to complete a task",
+            Temperature = 0.9, // Set the temperature to 0.9
+            FunctionChoiceBehavior = FunctionChoiceBehavior.Auto() // Auto invoke kernel functions
+        };
+
         // This is used by Blazor to capture the user input for shortcut keys.
         this.KeyCodeService.RegisterListener(this.OnKeyDownAsync);
         await this.LoadChatHistory();
@@ -97,18 +156,42 @@
 
     private async Task SendMessage()
     {
-        if (string.IsNullOrEmpty(this.MessageInput))
+        if (!string.IsNullOrWhiteSpace(this.MessageInput) && this.chatCompletionService != null)
         {
-            return;
+            // This tells Blazor the UI is going to be updated.
+            this.StateHasChanged();
+            this.loading = true;
+
+            // Copy the user message to a local variable and clear the MessageInput field in the UI
+            string userMessage = this.MessageInput;
+            this.MessageInput = string.Empty;
+            this.StateHasChanged();
+            
+            //// Start Sending a message to the chat completion service
+
+            this.chatHistory.AddUserMessage(userMessage);
+            try
+            {
+                IReadOnlyList<ChatMessageContent> response = await this.chatCompletionService.GetChatMessageContentsAsync(this.chatHistory,
+                    executionSettings: this.openAIPromptExecutionSettings,
+                    kernel: this.kernel);
+                foreach (ChatMessageContent aiResponse in response)
+                {
+                    if ((aiResponse.Role == AuthorRole.Assistant || aiResponse.Role == AuthorRole.Tool) && aiResponse.Content != null)
+                    {
+                        this.chatHistory.AddMessage(aiResponse.Role, aiResponse.Content);
+                    }
+                }
+            }
+            catch (HttpOperationException e)
+            {
+                if (e.ResponseContent != null) this.chatHistory.AddAssistantMessage(e.ResponseContent);
+            }
+
+            //// End Sending a message to the chat completion service
+
+            this.loading = false;
         }
-
-        this.loading = true;
-
-        this.chatHistory.AddUserMessage(this.MessageInput);
-        this.chatHistory.AddAssistantMessage("TEST");
-
-        this.MessageInput = string.Empty;
-        await this.LoadChatHistory();
     }
 
     private async Task ClearChat()

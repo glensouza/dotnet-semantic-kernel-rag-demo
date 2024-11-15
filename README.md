@@ -1,8 +1,12 @@
-# dotnet-semantic-kernel-rag-demo
+# Dotnet Semantic Kernel RAG Demo
 
-## New Project Setup
+## Retrieval-Augmented Generation (RAG)
 
-- Visual Studio `File` > `New' > 'Project`
+The RAG (Retrieval-Augmented Generation) pattern is an AI model architecture that enhances the generation of text by integrating external, relevant information retrieved from a knowledge base or database, improving accuracy and context. It combines retrieval mechanisms with generative models to produce more informed and contextually relevant responses.
+
+## Visual Studio New Project Setup
+
+- Navigate to `File` > `New` > `Project`
 - Select `.NET Aspire Starter App` template
 - Click `Next`
 - Enter name for solution and click `Next`
@@ -262,3 +266,7 @@ Replace the Home.razor file with the following:
     }
 }
 ```
+
+## Next Steps
+
+[Infrastructure](Infrastructure.md)
